@@ -13,12 +13,9 @@ from sklearn.preprocessing import QuantileTransformer
 class BinConf:
     def __init__(self,binsize):
         self.gene_binsize = binsize
-        if binsize < 20:
-            self.body_binsize = 10
-            self.body_scale = int(20 / binsize)
-        else :
-            self.body_binsize = binsize
-            self.body_scale = 1
+        self.body_binsize = binsize
+        self.body_scale = 1
+
     def geneBinsize(self):
         return self.gene_binsize
 
@@ -79,17 +76,23 @@ class BodyInfo:
     def loadAllPoints(self,xyz_txt):
         body=np.loadtxt(xyz_txt)
         bd = pd.DataFrame(columns=['x','y','z']);
-        bd['z']= body[:,2]
+
         bd['x']= body[:,0]
         bd['x']= bd['x']/self.bin_border
         bd['x']= bd['x'].astype(int)
+
         bd['y']= body[:,1]
         bd['y']= bd['y']/self.bin_border
         bd['y']= bd['y'].astype(int)
+
+        bd['z']= body[:,2]
         bd['z']= bd['z']/self.bin_border
         bd['z']= bd['z'].astype(int)
         self.body = bd
 
+    #################################
+    #  AP = x axis , ML = y axis
+    #
     def calcAPML_border(self):              
         # agg all z coordinate
         bd = self.body.groupby(['x', 'y']).agg(z=('z','max')).reset_index()
@@ -117,6 +120,9 @@ class BodyInfo:
     def getAPML_border(self):   
         return self.APML_x_idx , self.APML_y_idx           
     
+    #################################
+    #  AP = x axis , DV = y axis
+    #
     def calcAPDV_border(self):              
         # agg all y coordinate
         bd = self.body.groupby(['x', 'z']).agg(y=('y','max')).reset_index()
@@ -143,6 +149,36 @@ class BodyInfo:
 
     def getAPDV_border(self):   
         return self.APDV_x_idx , self.APDV_y_idx           
+
+    #################################
+    #  ML = x axis , DV = x axis
+    #
+    def calcMLDV_border(self):              
+        # agg all y coordinate
+        bd = self.body.groupby(['y', 'z']).agg(x=('x','max')).reset_index()
+        height = int(np.max(bd['y'])+10)
+        width = int(np.max(bd['z'])+10)
+        # get basic infos
+        self.MLDV_W  = width * self.bin_draw_scale
+        self.MLDV_H  = height * self.bin_draw_scale
+        self.MLDV_points_num = len(bd)*self.bin_draw_scale*self.bin_draw_scale
+        # get border dash points
+        graph_matrix = np.zeros((height,width),dtype='uint8')
+        graph_matrix[bd['y'],bd['z']]=1
+        ( body_y, body_x ) = np.nonzero(graph_matrix)
+        y_idx,x_idx = BorderDetect(body_x,body_y).Border()
+        # save final border
+        self.MLDV_x_idx = x_idx*self.bin_draw_scale
+        self.MLDV_y_idx = y_idx*self.bin_draw_scale
+
+    def getMLDV_num_points(self):
+        return self.MLDV_points_num
+
+    def getMLDV_WH(self):
+        return self.MLDV_W, self.MLDV_H
+
+    def getMLDV_border(self):   
+        return self.MLDV_x_idx , self.MLDV_y_idx           
 
 class Gene3D:
     def __init__(self,binsize):
@@ -178,6 +214,15 @@ class Gene3D:
         show_data['z'] = show_data['z'].astype(int)
         show_data = show_data.groupby(['x', 'z']).agg(value=('value', 'max')).reset_index()
         return show_data
+
+    def getMIR_MLDV(self):
+        show_data = self.gene_expr.copy()
+        show_data['y'] = show_data['y']/self.binsize
+        show_data['y'] = show_data['y'].astype(int)
+        show_data['z'] = show_data['z']/self.binsize
+        show_data['z'] = show_data['z'].astype(int)
+        show_data = show_data.groupby(['y', 'z']).agg(value=('value', 'max')).reset_index()
+        return show_data
    
 def GetBodyInfo(body_txt,binconf):
     body_binsize, body_scale = binconf.bodyBinConf()
@@ -208,7 +253,15 @@ def GetBackground(view,body_info):
         return draw_array
         #return None
     elif view == "MLDV" :
-        return None
+        body_info.calcMLDV_border()
+        W,H = body_info.getMLDV_WH()
+        draw_array = np.zeros((H,W,3),dtype='uint8')
+        xids,yids = body_info.getMLDV_border()
+        # draw background
+        draw_array[yids,xids,:] = 255
+        # draw scale bar
+        draw_array[[H-10,H-9,H-8],W-15:W-5,:]=255
+        return draw_array
 
 def GetGeneExpr(gene_txt,binconf):
     gene_expr = Gene3D(binconf.geneBinsize())
@@ -239,7 +292,7 @@ def DrawSingleFISH_APML( body_info, expr, channel_id):
     draw_expr =  FISH_scale(body_info.getAPML_num_points(),APML_expr['value'])
     if channel_id == 0: 
         draw_array[APML_expr['y'],APML_expr['x'],0] = draw_expr
-        draw_array[APML_expr['y'],APML_expr['x'],2] = draw_expr # *2//3 
+        draw_array[APML_expr['y'],APML_expr['x'],2] = draw_expr
     elif channel_id == 2: 
         draw_array[APML_expr['y'],APML_expr['x'],0] = draw_expr
         draw_array[APML_expr['y'],APML_expr['x'],1] = draw_expr
@@ -254,7 +307,7 @@ def DrawSingleFISH_APDV(body_info, expr, channel_id):
     draw_expr = FISH_scale(body_info.getAPDV_num_points(),APDV_expr['value'])
     if channel_id == 0: 
         draw_array[APDV_expr['z'],APDV_expr['x'],0] = draw_expr
-        draw_array[APDV_expr['z'],APDV_expr['x'],2] = draw_expr # *2//3 
+        draw_array[APDV_expr['z'],APDV_expr['x'],2] = draw_expr
     elif channel_id == 2: 
         draw_array[APDV_expr['z'],APDV_expr['x'],0] = draw_expr
         draw_array[APDV_expr['z'],APDV_expr['x'],1] = draw_expr
@@ -262,12 +315,27 @@ def DrawSingleFISH_APDV(body_info, expr, channel_id):
         draw_array[APDV_expr['z'],APDV_expr['x'],channel_id] = draw_expr
     return draw_array 
 
+def DrawSingleFISH_DVML(body_info, expr, channel_id):
+    W,H = body_info.getMLDV_WH()
+    draw_array = np.zeros((H,W,3),dtype='uint8')
+    MLDV_expr = expr.getMIR_MLDV()
+    draw_expr = FISH_scale(body_info.getMLDV_num_points(),MLDV_expr['value'])
+    if channel_id == 0: 
+        draw_array[MLDV_expr['y'],MLDV_expr['z'],0] = draw_expr
+        draw_array[MLDV_expr['y'],MLDV_expr['z'],2] = draw_expr
+    elif channel_id == 2: 
+        draw_array[MLDV_expr['y'],MLDV_expr['z'],0] = draw_expr
+        draw_array[MLDV_expr['y'],MLDV_expr['z'],1] = draw_expr
+    else:
+        draw_array[MLDV_expr['y'],MLDV_expr['z'],channel_id] = draw_expr
+    return draw_array 
+
 def DrawSingleFISH(view, body_info, gene_expr, channel_id):
     if view == "APML" :
         return DrawSingleFISH_APML(body_info, gene_expr, channel_id)
     elif view == "APDV":
         return DrawSingleFISH_APDV(body_info, gene_expr, channel_id)
-    elif view == "DVML":
+    elif view == "MLDV":
         return DrawSingleFISH_DVML(body_info, gene_expr, channel_id)
 
 ############################################################################
@@ -275,22 +343,22 @@ def DrawSingleFISH(view, body_info, gene_expr, channel_id):
 #
 def FISH_like_usage():
     print("""
-Usage : FISH_like.py -i <individual.txt> \\
-                     -o <output prefix>  \\
-                     -g [gene.txt that draw in green channel] \\
-                     -m [gene.txt that draw in magenta channel]   \\
-                     -y [gene.txt that draw in yellow channel]  \\
-                     --view [default APML APML/APDV/MLDV] \\
-                     --xmin [default 0] \\
-                     --ymin [default 0] \\
-                     --zmin [default 0] \\
-                     --xmax [default 1000] \\
-                     --ymax [default 1000] \\
-                     --zmax [default 1000] \\
-                     --binsize [default 10] 
+Usage : FISH_3c.py -i <individual.txt> \\
+                   -o <output prefix>  \\
+                   -g [gene.txt that draw in Green channel] \\
+                   -m [gene.txt that draw in Magenta channel]   \\
+                   -y [gene.txt that draw in Yellow channel]  \\
+                   --view [default APML APML/APDV/MLDV] \\
+                   --xmin [default 0] \\
+                   --ymin [default 0] \\
+                   --zmin [default 0] \\
+                   --xmax [default 1000] \\
+                   --ymax [default 1000] \\
+                   --zmax [default 1000] \\
+                   --binsize [default 10] 
 
 Example :
-    python3 FISH_like.py -i WT.txt -o WT_wnt1 -g wnt1.txt 
+    python3 FISH_3c.py -i WT.txt -o WT_wnt1 -g wnt1.txt 
 
 Notice :
     please use at least one of -g, -m, or -y.
