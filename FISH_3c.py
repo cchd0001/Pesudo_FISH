@@ -4,17 +4,23 @@ import getopt
 import numpy as np
 import pandas as pd
 from skimage import io as skio
-from scipy import ndimage
-from sklearn.preprocessing import QuantileTransformer
 
 #################################################
 # BinConf
 # 
 class BinConf:
-    def __init__(self,binsize):
+    def __init__(self,view,binsize):
         self.gene_binsize = binsize
-        self.body_binsize = binsize
-        self.body_scale = 1
+        if view == 'APML' :
+            minBorderBinsize = 10
+        else :
+            minBorderBinsize = 20 # DV may contain 20 micron gaps
+        if binsize < minBorderBinsize :
+            self.body_binsize = minBorderBinsize
+            self.body_scale = int(minBorderBinsize/binsize) #please use binsize = 5/10/20 or greater value !
+        else :
+            self.body_binsize = binsize
+            self.body_scale = 1
 
     def geneBinsize(self):
         return self.gene_binsize
@@ -35,35 +41,85 @@ class BorderDetect:
         xmax = np.max(self.x)
         ymin = np.min(self.y)
         ymax = np.max(self.y)
-        self.x = self.x -xmin + 5
-        self.y = self.y -ymin + 5
-        height = int(ymax-ymin+10)
-        width = int(xmax-xmin+10)
+        self.x = self.x -xmin + 5  #left 5 pixel of margin
+        self.y = self.y -ymin + 5  #left 5 pixel of margin
+        height = int(ymax-ymin+10) #right 5 pixel of margin
+        width = int(xmax-xmin+10)  #right 5 pixel of margin
         mask = np.zeros((height,width),dtype=int)
         mask[self.y,self.x] = 1
         # open and close to remove noise and fill holes
-        mask = ndimage.binary_opening(mask).astype(int)
+        from scipy import ndimage
         mask = ndimage.binary_closing(mask).astype(int)
+        mask = ndimage.binary_opening(mask).astype(int)
         
         for y in range(0,height):
-            for x in range(2,width-1):
-                if mask[y,x-2]==0 and mask[y,x-1]==0 and mask[y,x]==0 and mask[y,x+1]==1:
+            for x in range(1,width-1):
+                if mask[y,x-1]==0 and mask[y,x]==0 and mask[y,x+1]==1:
                     mask[y,x] = 255
-            for x in range(width-3,1,-1):
-                if mask[y,x+2]==0 and mask[y,x+1]==0 and mask[y,x]==0 and mask[y,x-1]==1:
+            for x in range(width-2,1,-1):
+                if mask[y,x+1]==0 and mask[y,x]==0 and mask[y,x-1]==1:
                     mask[y,x] = 255
         for x in range(0,width):
-            for y in range(2,height-1):
-                if mask[y-2,x]==0 and mask[y-1,x]==0 and mask[y,x]==0 and mask[y+1,x]==1:
+            for y in range(1,height-1):
+                if mask[y-1,x]==0 and mask[y,x]==0 and mask[y+1,x]==1:
                     mask[y,x] = 255
-            for y in range(height-3,1,-1):
-                if mask[y+2,x]==0 and mask[y+1,x]==0 and mask[y,x]==0 and mask[y-1,x]==1:
+            for y in range(height-2,1,-1):
+                if mask[y+1,x]==0 and mask[y,x]==0 and mask[y-1,x]==1:
                     mask[y,x] = 255
         mask[self.y,self.x] = 0
         (y_idx,x_idx) = np.nonzero(mask)
-        y_idx = y_idx + ymin - 5
-        x_idx = x_idx + xmin - 5
+        y_idx = y_idx + ymin - 5 #switch back to raw coord
+        x_idx = x_idx + xmin - 5 #switch back to raw coord
+        #xy = np.zeros((len(y_idx),2))
+        #xy[:,0] = x_idx
+        #xy[:,1] = y_idx
+        #import alphashape
+        #hull = alphashape.alphashape(xy,alpha=0.001)
+        #hull_xy = np.array(list(zip(*hull.exterior.xy)))
+        #hull_xy = hull_xy.astype(int)
+        #return hull_xy[:,1] , hull_xy[:,0]
         return y_idx,x_idx
+
+#################################################
+# ROIManager
+#
+class ROIManager:
+    def __init__(self,xmin,xmax,ymin,ymax,zmin,zmax):
+        self.xmin = xmin
+        self.xmax = xmax
+        self.ymin = ymin
+        self.ymax = ymax
+        self.zmin = zmin
+        self.zmax = zmax
+    
+    ###################################
+    # always filter nax before min
+    def filterDFMax(self,df):
+        if self.zmax != None:
+            df = df[df['z']<=self.zmax]
+        if self.xmax != None:
+            df = df[df['x']<=self.xmax]
+        if self.ymax != None:
+            df = df[df['y']<=self.ymax]
+        return df.copy()
+
+    ###################################
+    # always filter nax before min
+    def filterAndResetDFMin(self,df):
+        if self.xmin == None:
+            self.xmin = np.min(df['x'])
+        if self.ymin == None:
+            self.ymin = np.min(df['y'])
+        if self.zmin == None:
+            self.zmin = np.min(df['z'])
+        df['x'] = df['x'] - self.xmin
+        df = df[df['x']>=0]
+        df['y'] = df['y'] - self.ymin
+        df = df[df['y']>=0]
+        df['z'] = df['z'] - self.zmin
+        df = df[df['z']>=0]
+        return df.copy()
+            
 
 #################################################
 # BodyInfo 
@@ -73,21 +129,28 @@ class BodyInfo:
         self.bin_border = bin_border
         self.bin_draw_scale = bin_draw_scale
 
-    def loadAllPoints(self,xyz_txt):
-        body=np.loadtxt(xyz_txt)
+    def loadAllPoints(self,xyz_txt, roi):
+        body = np.loadtxt(xyz_txt)
         bd = pd.DataFrame(columns=['x','y','z']);
-
-        bd['x']= body[:,0]
+        #format x axis by roi first
+        bd['x'] = body[:,0]
+        bd['z']= body[:,2]
+        bd['y']= body[:,1]
+        bd = roi.filterDFMax(bd)
+        bd = roi.filterAndResetDFMin(bd)
+        #bin x axis now
         bd['x']= bd['x']/self.bin_border
         bd['x']= bd['x'].astype(int)
-
-        bd['y']= body[:,1]
+        bd['x']=bd['x']+1
+        #bin y axis now
         bd['y']= bd['y']/self.bin_border
         bd['y']= bd['y'].astype(int)
-
-        bd['z']= body[:,2]
+        bd['y']= bd['y']+1
+        #bin z axis now
         bd['z']= bd['z']/self.bin_border
         bd['z']= bd['z'].astype(int)
+        bd['z']= bd['z']+1
+        # save final body
         self.body = bd
 
     #################################
@@ -96,8 +159,8 @@ class BodyInfo:
     def calcAPML_border(self):              
         # agg all z coordinate
         bd = self.body.groupby(['x', 'y']).agg(z=('z','max')).reset_index()
-        height = int(np.max(bd['y'])+10)
-        width = int(np.max(bd['x'])+10)
+        height = int(np.max(bd['y'])+2) #right 1 pixel margin
+        width = int(np.max(bd['x'])+2)  #right 1 pixel margin
         # get basic infos
         self.APML_W  = width * self.bin_draw_scale
         self.APML_H  = height * self.bin_draw_scale
@@ -126,8 +189,8 @@ class BodyInfo:
     def calcAPDV_border(self):              
         # agg all y coordinate
         bd = self.body.groupby(['x', 'z']).agg(y=('y','max')).reset_index()
-        height = int(np.max(bd['z'])+10)
-        width = int(np.max(bd['x'])+10)
+        height = int(np.max(bd['z'])+2)
+        width = int(np.max(bd['x'])+2)
         # get basic infos
         self.APDV_W  = width * self.bin_draw_scale
         self.APDV_H  = height * self.bin_draw_scale
@@ -147,8 +210,8 @@ class BodyInfo:
     def getAPDV_WH(self):
         return self.APDV_W, self.APDV_H
 
-    def getAPDV_border(self):   
-        return self.APDV_x_idx , self.APDV_y_idx           
+    def getAPDV_border(self):
+        return self.APDV_x_idx , self.APDV_y_idx
 
     #################################
     #  ML = x axis , DV = x axis
@@ -156,8 +219,8 @@ class BodyInfo:
     def calcMLDV_border(self):              
         # agg all y coordinate
         bd = self.body.groupby(['y', 'z']).agg(x=('x','max')).reset_index()
-        height = int(np.max(bd['y'])+10)
-        width = int(np.max(bd['z'])+10)
+        height = int(np.max(bd['y'])+2)
+        width = int(np.max(bd['z'])+2)
         # get basic infos
         self.MLDV_W  = width * self.bin_draw_scale
         self.MLDV_H  = height * self.bin_draw_scale
@@ -184,17 +247,22 @@ class Gene3D:
     def __init__(self,binsize):
         self.binsize = binsize
 
-    def loadExpr(self,gene_txt):
+    def loadExpr(self,gene_txt,roi):
         a = np.loadtxt(gene_txt)
         if len(a) == 0 :
            self.valid = False   
            return
         show_data = pd.DataFrame(columns=['x','y','z','value'])
-        self.valid = True
         show_data['x'] = a[:,0]
         show_data['y'] = a[:,1]
         show_data['z'] = a[:,2]
         show_data['value'] = a[:,3]
+        show_data = roi.filterDFMax(show_data)
+        show_data = roi.filterAndResetDFMin(show_data)
+        if len(show_data) <1 :
+            self.valid = False
+            return
+        self.valid = True
         self.gene_expr = show_data
 
     def getMIR_APML(self):
@@ -224,10 +292,10 @@ class Gene3D:
         show_data = show_data.groupby(['y', 'z']).agg(value=('value', 'max')).reset_index()
         return show_data
    
-def GetBodyInfo(body_txt,binconf):
+def GetBodyInfo(body_txt,binconf,roi):
     body_binsize, body_scale = binconf.bodyBinConf()
     body_info = BodyInfo(body_binsize,body_scale)
-    body_info.loadAllPoints(body_txt)
+    body_info.loadAllPoints(body_txt,roi)
     return body_info
 
 def GetBackground(view,body_info):
@@ -263,12 +331,13 @@ def GetBackground(view,body_info):
         draw_array[[H-10,H-9,H-8],W-15:W-5,:]=255
         return draw_array
 
-def GetGeneExpr(gene_txt,binconf):
+def GetGeneExpr(gene_txt,binconf,roi):
     gene_expr = Gene3D(binconf.geneBinsize())
-    gene_expr.loadExpr(gene_txt)
+    gene_expr.loadExpr(gene_txt,roi)
     return gene_expr
 
 def FISH_scale(num_points, panel_expr):
+    from sklearn.preprocessing import QuantileTransformer
     min_value = np.min(panel_expr)
     max_value = np.max(panel_expr)
     #print(f'min = {min_value}; max={max_value}',flush=True)
@@ -289,6 +358,8 @@ def DrawSingleFISH_APML( body_info, expr, channel_id):
     W,H = body_info.getAPML_WH()
     draw_array = np.zeros((H,W,3),dtype='uint8')
     APML_expr = expr.getMIR_APML()
+    APML_expr['y'] = APML_expr['y']+body_info.bin_draw_scale #shift the 1 pixel margin for border
+    APML_expr['x'] = APML_expr['x']+body_info.bin_draw_scale #shift the 1 pixel margin for border
     draw_expr =  FISH_scale(body_info.getAPML_num_points(),APML_expr['value'])
     if channel_id == 0: 
         draw_array[APML_expr['y'],APML_expr['x'],0] = draw_expr
@@ -304,6 +375,8 @@ def DrawSingleFISH_APDV(body_info, expr, channel_id):
     W,H = body_info.getAPDV_WH()
     draw_array = np.zeros((H,W,3),dtype='uint8')
     APDV_expr = expr.getMIR_APDV()
+    APDV_expr['x'] = APDV_expr['x']+body_info.bin_draw_scale #shift the 1 pixel margin for border
+    APDV_expr['z'] = APDV_expr['z']+body_info.bin_draw_scale #shift the 1 pixel margin for border
     draw_expr = FISH_scale(body_info.getAPDV_num_points(),APDV_expr['value'])
     if channel_id == 0: 
         draw_array[APDV_expr['z'],APDV_expr['x'],0] = draw_expr
@@ -319,6 +392,8 @@ def DrawSingleFISH_DVML(body_info, expr, channel_id):
     W,H = body_info.getMLDV_WH()
     draw_array = np.zeros((H,W,3),dtype='uint8')
     MLDV_expr = expr.getMIR_MLDV()
+    MLDV_expr['y'] = MLDV_expr['y']+body_info.bin_draw_scale #shift the 1 pixel margin for border
+    MLDV_expr['z'] = MLDV_expr['z']+body_info.bin_draw_scale #shift the 1 pixel margin for border
     draw_expr = FISH_scale(body_info.getMLDV_num_points(),MLDV_expr['value'])
     if channel_id == 0: 
         draw_array[MLDV_expr['y'],MLDV_expr['z'],0] = draw_expr
@@ -345,24 +420,21 @@ def FISH_like_usage():
     print("""
 Usage : FISH_3c.py -i <individual.txt> \\
                    -o <output prefix>  \\
-                   -g [gene.txt that draw in Green channel] \\
-                   -m [gene.txt that draw in Magenta channel]   \\
-                   -y [gene.txt that draw in Yellow channel]  \\
-                   --view [default APML APML/APDV/MLDV] \\
-                   --xmin [default 0] \\
-                   --ymin [default 0] \\
-                   --zmin [default 0] \\
-                   --xmax [default 1000] \\
-                   --ymax [default 1000] \\
-                   --zmax [default 1000] \\
-                   --binsize [default 10] 
-
+                   -g [gene.txt that draw in Green(#00ff00) channel] \\
+                   -m [gene.txt that draw in Magenta(#ff00ff) channel]   \\
+                   -y [gene.txt that draw in Yellow(#ffff00) channel]  \\
+                   --view [default APML, must be APML/APDV/MLDV] \\
+                   --xmin [default None] \\
+                   --ymin [default None] \\
+                   --zmin [default None] \\
+                   --xmax [default None] \\
+                   --ymax [default None] \\
+                   --zmax [default None] \\
+                   --binsize [default 5] 
 Example :
     python3 FISH_3c.py -i WT.txt -o WT_wnt1 -g wnt1.txt 
-
 Notice :
-    please use at least one of -g, -m, or -y.
-
+    please at least assign one of -g, -m, or -y.
 """)
 
 def FISH_like_main(argv:[]):
@@ -374,9 +446,9 @@ def FISH_like_main(argv:[]):
     r_gene = ''
     b_gene = ''
     view = 'APML'
-    xmin = ymin = zmin = 0
-    xmax = ymax = zmax = 1000
-    binsize = 10
+    xmin = ymin = zmin = None
+    xmax = ymax = zmax = None
+    binsize = 5
 
     ###############################################################################
     # Parse the arguments
@@ -396,9 +468,9 @@ def FISH_like_main(argv:[]):
             prefix = arg
         elif opt == "-m" :
             r_gene = arg
-        elif opt == "-b" :
-            b_gene = arg
         elif opt == "-y" :
+            b_gene = arg
+        elif opt == "-g" :
             g_gene = arg
         elif opt == "--xmin":
             xmin = int(arg)
@@ -415,39 +487,39 @@ def FISH_like_main(argv:[]):
         elif opt == "--view":
             view = arg
         elif opt == "--binsize":
-            binsize = int(opt)
+            binsize = int(arg)
     
     ###############################################################################
     # Sanity check
     if indv == "" or ( g_gene == "" and r_gene == "" and b_gene == "" ) or prefix == "":
         FISH_like_usage()
         sys.exit(3)
-    
-    binconf = BinConf(binsize)
+    roi = ROIManager(xmin,xmax,ymin,ymax,zmin,zmax)
+    binconf = BinConf(view,binsize)
     print(f"the drawing view : {view}")
     ###############################################################################
     # Load the body points 
     print('Loading body now ...',flush=True)
-    body_info = GetBodyInfo(indv,binconf)
+    body_info = GetBodyInfo(indv,binconf,roi)
     ###############################################################################
     # Load the gene expr points and draw
     print('Loading gene expression now ...',flush=True)
     r_gene_expr = g_gene_expr = b_gene_expr = None 
     channel = 0
     if g_gene != "" :
-        g_gene_expr = GetGeneExpr(g_gene,binconf) 
+        g_gene_expr = GetGeneExpr(g_gene,binconf,roi) 
         if g_gene_expr.valid :
             channel = channel + 1
         else :
             g_gene_expr = None
     if r_gene != "" :
-        r_gene_expr = GetGeneExpr(r_gene,binconf) 
+        r_gene_expr = GetGeneExpr(r_gene,binconf,roi) 
         if r_gene_expr.valid :
             channel = channel + 1
         else :
             r_gene_expr = None
     if b_gene != "" :
-        b_gene_expr = GetGeneExpr(b_gene,binconf) 
+        b_gene_expr = GetGeneExpr(b_gene,binconf,roi) 
         if b_gene_expr.valid :
             channel = channel + 1
         else :
