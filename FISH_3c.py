@@ -96,12 +96,12 @@ class ROIManager:
     # always filter nax before min
     def filterDFMax(self,df):
         if self.zmax != None:
-            df = df[df['z']<=self.zmax]
+            df = df[df['z']<=self.zmax].copy()
         if self.xmax != None:
-            df = df[df['x']<=self.xmax]
+            df = df[df['x']<=self.xmax].copy()
         if self.ymax != None:
-            df = df[df['y']<=self.ymax]
-        return df.copy()
+            df = df[df['y']<=self.ymax].copy()
+        return df
 
     ###################################
     # always filter nax before min
@@ -113,12 +113,12 @@ class ROIManager:
         if self.zmin == None:
             self.zmin = np.min(df['z'])
         df['x'] = df['x'] - self.xmin
-        df = df[df['x']>=0]
+        df = df[df['x']>=0].copy()
         df['y'] = df['y'] - self.ymin
-        df = df[df['y']>=0]
+        df = df[df['y']>=0].copy()
         df['z'] = df['z'] - self.zmin
-        df = df[df['z']>=0]
-        return df.copy()
+        df = df[df['z']>=0].copy()
+        return df
             
 
 #################################################
@@ -247,8 +247,15 @@ class Gene3D:
     def __init__(self,binsize):
         self.binsize = binsize
 
-    def loadExpr(self,gene_txt,roi):
-        a = np.loadtxt(gene_txt)
+    def loadExpr(self,gene_txt_list,roi):
+        a = ''
+        for gene_txt in gene_txt_list :  #hanle multi files here
+            aa = np.loadtxt(gene_txt)
+            if len(a) == 0:
+               a = aa
+            else :
+               a = np.concatenate((a, aa), axis=0)
+            
         if len(a) == 0 :
            self.valid = False   
            return
@@ -302,33 +309,36 @@ def GetBackground(view,body_info):
     if view == "APML" :
         body_info.calcAPML_border()
         W,H = body_info.getAPML_WH()
-        draw_array = np.zeros((H,W,3),dtype='uint8')
+        draw_array = np.zeros((H,W,3),dtype='int')
         xids,yids = body_info.getAPML_border()
         # draw background
         draw_array[yids,xids,:] = 255
         # draw scale bar
-        draw_array[[H-10,H-9,H-8],W-15:W-5,:]=255
+        #draw_array[[H-10,H-9,H-8],W-15:W-5,:]=255
+        draw_array[H-20:H-10,W-15:W-12,:]=255
         return draw_array
     elif view == "APDV" :
         body_info.calcAPDV_border()
         W,H = body_info.getAPDV_WH()
-        draw_array = np.zeros((H,W,3),dtype='uint8')
+        draw_array = np.zeros((H,W,3),dtype='int')
         xids,yids = body_info.getAPDV_border()
         # draw background
         draw_array[yids,xids,:] = 255
         # draw scale bar
-        draw_array[[H-10,H-9,H-8],W-15:W-5,:]=255
+        #draw_array[[H-10,H-9,H-8],W-15:W-5,:]=255
+        draw_array[H-20:H-10,W-15:W-12,:]=255
         return draw_array
         #return None
     elif view == "MLDV" :
         body_info.calcMLDV_border()
         W,H = body_info.getMLDV_WH()
-        draw_array = np.zeros((H,W,3),dtype='uint8')
+        draw_array = np.zeros((H,W,3),dtype='int')
         xids,yids = body_info.getMLDV_border()
         # draw background
         draw_array[yids,xids,:] = 255
         # draw scale bar
-        draw_array[[H-10,H-9,H-8],W-15:W-5,:]=255
+        #draw_array[[H-10,H-9,H-8],W-15:W-5,:]=255
+        draw_array[H-20:H-10,W-15:W-12,:]=255
         return draw_array
 
 def GetGeneExpr(gene_txt,binconf,roi):
@@ -435,16 +445,27 @@ Example :
     python3 FISH_3c.py -i WT.txt -o WT_wnt1 -g wnt1.txt 
 Notice :
     please at least assign one of -g, -m, or -y.
+    -g/-m/-y can be assigned many times.
 """)
+
+
+def saveimage(fname ,draw_matrix):
+    used_draw_matrix = draw_matrix.copy()
+    used_draw_matrix[draw_matrix>255] = 255
+    new_draw_matrix = np.zeros(used_draw_matrix.shape , dtype='uint8') 
+    #used_draw_matrix = used_draw_matrix.astype('uint8')
+    new_draw_matrix[:,:,:] = used_draw_matrix[:,:,:];
+    skio.imsave(fname,new_draw_matrix)
+    
 
 def FISH_like_main(argv:[]):
     ###############################################################################
     # Default values
     indv = ''
     prefix = ''
-    g_gene = ''
-    r_gene = ''
-    b_gene = ''
+    g_gene = []
+    m_gene = []
+    y_gene = []
     view = 'APML'
     xmin = ymin = zmin = None
     xmax = ymax = zmax = None
@@ -467,11 +488,11 @@ def FISH_like_main(argv:[]):
         elif opt in ("-o"):
             prefix = arg
         elif opt == "-m" :
-            r_gene = arg
+            m_gene.append(arg)
         elif opt == "-y" :
-            b_gene = arg
+            y_gene.append(arg)
         elif opt == "-g" :
-            g_gene = arg
+            g_gene.append(arg)
         elif opt == "--xmin":
             xmin = int(arg)
         elif opt == "--ymin":
@@ -491,7 +512,7 @@ def FISH_like_main(argv:[]):
     
     ###############################################################################
     # Sanity check
-    if indv == "" or ( g_gene == "" and r_gene == "" and b_gene == "" ) or prefix == "":
+    if indv == "" or ( len(g_gene) == 0 and len(m_gene) == 0 and len(y_gene) == 0 ) or prefix == "":
         FISH_like_usage()
         sys.exit(3)
     roi = ROIManager(xmin,xmax,ymin,ymax,zmin,zmax)
@@ -504,26 +525,26 @@ def FISH_like_main(argv:[]):
     ###############################################################################
     # Load the gene expr points and draw
     print('Loading gene expression now ...',flush=True)
-    r_gene_expr = g_gene_expr = b_gene_expr = None 
+    m_gene_expr = g_gene_expr = y_gene_expr = None 
     channel = 0
-    if g_gene != "" :
+    if len(g_gene) != 0 :
         g_gene_expr = GetGeneExpr(g_gene,binconf,roi) 
         if g_gene_expr.valid :
             channel = channel + 1
         else :
             g_gene_expr = None
-    if r_gene != "" :
-        r_gene_expr = GetGeneExpr(r_gene,binconf,roi) 
-        if r_gene_expr.valid :
+    if m_gene != "" :
+        m_gene_expr = GetGeneExpr(m_gene,binconf,roi) 
+        if m_gene_expr.valid :
             channel = channel + 1
         else :
-            r_gene_expr = None
-    if b_gene != "" :
-        b_gene_expr = GetGeneExpr(b_gene,binconf,roi) 
-        if b_gene_expr.valid :
+            m_gene_expr = None
+    if len(y_gene) != 0  :
+        y_gene_expr = GetGeneExpr(y_gene,binconf,roi) 
+        if y_gene_expr.valid :
             channel = channel + 1
         else :
-            b_gene_expr = None
+            y_gene_expr = None
 
     ###############################################################################
     # get sample border
@@ -531,36 +552,40 @@ def FISH_like_main(argv:[]):
     ###############################################################################
     # Draw single FISH
     r_image = b_image = g_image = None
-    if r_gene_expr != None :
-        r_image = DrawSingleFISH(view,body_info,r_gene_expr,0)
+    if m_gene_expr != None :
+        r_image = DrawSingleFISH(view,body_info,m_gene_expr,0)
         if channel == 1 :
-            print('Draw red-channel-FISH now ...',flush=True)
+            print('Draw magenta-channel-FISH now ...',flush=True)
             draw_image = background + r_image
-            skio.imsave(f'{prefix}.magenta.MIR.tif',draw_image)
+            saveimage(f'{prefix}.magenta.MIR.tif',draw_image)
+            #skio.imsave(f'{prefix}.magenta.MIR.tif',draw_image.astype('uint8'))
     if g_gene_expr != None :
         g_image = DrawSingleFISH(view,body_info,g_gene_expr,1)
         if channel == 1 :
             print('Draw green-channel-FISH now ...',flush=True)
             draw_image = background + g_image 
-            skio.imsave(f'{prefix}.green.MIR.tif',draw_image)
-    if b_gene_expr != None :
-        b_image = DrawSingleFISH(view,body_info,b_gene_expr,2)
+            saveimage(f'{prefix}.green.MIR.tif',draw_image)
+            #skio.imsave(f'{prefix}.green.MIR.tif',draw_image.astype('uint8'))
+    if y_gene_expr != None :
+        b_image = DrawSingleFISH(view,body_info,y_gene_expr,2)
         if channel == 1 :
-            print('Draw blue-channel-FISH now ...',flush=True)
+            print('Draw yellow-channel-FISH now ...',flush=True)
             draw_image = background + b_image 
-            skio.imsave(f'{prefix}.yellow.MIR.tif',draw_image)
+            saveimage(f'{prefix}.yellow.MIR.tif',draw_image)
+            #skio.imsave(f'{prefix}.yellow.MIR.tif',draw_image.astype('uint8'))
 
     ###############################################################################
     # Draw multi-FISH
     if channel > 1:
         print('Draw multi-FISH now ...',flush=True)
-        if r_gene_expr != None :
+        if m_gene_expr != None :
             draw_image = background + r_image
         if g_gene_expr != None :
             draw_image = draw_image + g_image
-        if b_gene_expr != None :
+        if y_gene_expr != None :
             draw_image = draw_image + b_image
-        skio.imsave(f'{prefix}.multi.MIR.tif',draw_image)
+        saveimage(f'{prefix}.multi.MIR.tif',draw_image)
+        #skio.imsave(f'{prefix}.multi.MIR.tif',draw_image)
     
     ###############################################################################
     # Done
